@@ -28,6 +28,11 @@ CONFIG_PATH = SCRIPT_DIR / "boot_force_pin_helper.json"
 DEFAULT_EXE = Path(r"E:\OM6239_BootCreator_V05\binToBin.exe")
 WINDOW_TITLE = "OM6239BootLoader生成工具v0.5"
 
+# PAD_PU_CTRL / PAD_PU_CTRL_1：每脚 2bit
+# 01 = Pu150k（150K 上拉）；10 = Pu30k（30K 上拉）
+PULL_150K = 0b01
+PULL_30K = 0b10
+
 # Qt automation_id（已实测）
 AID = {
     "pu0": "MainWindow.centralwidget.groupBox_3.LE_PU_0",
@@ -79,6 +84,7 @@ class BootRegs:
     key_mask: int
     reserve: int
     data_out: int
+    pull_code: int = PULL_150K
 
     def as_hex_fields(self) -> dict:
         return {
@@ -103,6 +109,7 @@ def load_config() -> dict:
         "reserve": "00000000",
         "auto_show": True,
         "auto_boot_v30": False,
+        "pull_strength": "150k",
     }
     if CONFIG_PATH.exists():
         try:
@@ -141,15 +148,34 @@ def parse_port_pins(text: str) -> List[Tuple[str, int]]:
     return out
 
 
+def pull_code_from_name(name: str) -> int:
+    """150k/Pu150k → 01；30k/Pu30k → 10。未知值回落到 150K。"""
+    key = re.sub(r"[\s_\-]", "", str(name or "")).lower()
+    if key in ("30k", "30", "pu30k", "0b10", "10", "2"):
+        return PULL_30K
+    return PULL_150K
+
+
+def describe_pull(pull_code: int) -> str:
+    code = pull_code & 0b11
+    if code == PULL_30K:
+        return "30K (10)"
+    if code == PULL_150K:
+        return "150K (01)"
+    return f"自定义 ({code:02b})"
+
+
 def calc_regs(
     pins_text: str,
     out_en: int = 0,
     data_out: int = 0xFFFFFFFF,
     reserve: int = 0,
-    pull_code: int = 0b01,
+    pull_code: int = PULL_150K,
 ) -> BootRegs:
     """
-    pull_code: 每脚 2bit，手册常用 01 = 150K 上拉。
+    pull_code: 每脚 2bit。
+      01 = Pu150k（150K 上拉）
+      10 = Pu30k（30K 上拉）
     KEY_MASK / OUTENCLR：每脚 1bit，置 1 表示该脚参与强制进 Boot（输入）。
     """
     parsed = parse_port_pins(pins_text)
@@ -179,6 +205,7 @@ def calc_regs(
         key_mask=key_mask,
         reserve=reserve & 0xFFFFFFFF,
         data_out=data_out & 0xFFFFFFFF,
+        pull_code=pull_code & 0b11,
     )
 
 
@@ -462,6 +489,12 @@ class App(tk.Tk):
         self.autoshow_var = tk.BooleanVar(value=bool(self.cfg.get("auto_show", True)))
         self.autoboot_v30_var = tk.BooleanVar(value=bool(self.cfg.get("auto_boot_v30", False)))
         self.autofolder_var = tk.BooleanVar(value=bool(self.cfg.get("auto_open_folder", False)))
+        pull_saved = str(self.cfg.get("pull_strength", "150k")).lower()
+        if pull_code_from_name(pull_saved) == PULL_30K and "30" in pull_saved:
+            pull_saved = "30k"
+        else:
+            pull_saved = "150k"
+        self.pull_var = tk.StringVar(value=pull_saved)
 
         for i, (lab, var, w) in enumerate(
             [
@@ -477,6 +510,13 @@ class App(tk.Tk):
 
         opts = ttk.Frame(row1b)
         opts.grid(row=1, column=0, columnspan=10, sticky="w", pady=4)
+        ttk.Label(opts, text="上拉").pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Radiobutton(
+            opts, text="150K (01)", value="150k", variable=self.pull_var
+        ).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Radiobutton(
+            opts, text="30K (10)", value="30k", variable=self.pull_var
+        ).pack(side=tk.LEFT, padx=(0, 12))
         ttk.Checkbutton(opts, text="填入后自动 SHOW", variable=self.autoshow_var).pack(side=tk.LEFT, padx=(0, 12))
         ttk.Checkbutton(opts, text="输出BOOT（V30）", variable=self.autoboot_v30_var).pack(side=tk.LEFT, padx=(0, 12))
         ttk.Checkbutton(opts, text="输出后打开目录", variable=self.autofolder_var).pack(side=tk.LEFT)
@@ -504,6 +544,7 @@ class App(tk.Tk):
         ttk.Label(frm, textvariable=self.status).pack(anchor="w", padx=4)
 
         self.pins_var.trace_add("write", lambda *_: self._recalc(silent=True))
+        self.pull_var.trace_add("write", lambda *_: self._recalc(silent=True))
 
     def _browse_exe(self) -> None:
         path = filedialog.askopenfilename(
@@ -539,6 +580,7 @@ class App(tk.Tk):
                 out_en=self._parse_hex32(self.outen_var.get(), "OUTENSET"),
                 data_out=self._parse_hex32(self.dataout_var.get(), "DATAOUT"),
                 reserve=self._parse_hex32(self.reserve_var.get(), "Reserve"),
+                pull_code=pull_code_from_name(self.pull_var.get()),
             )
         except Exception as e:
             if not silent:
@@ -550,6 +592,7 @@ class App(tk.Tk):
         lines = [
             f"引脚: {', '.join(regs.pins_port)}",
             f"线性位: {', '.join(str(x) for x in regs.linear)}",
+            f"上拉: {describe_pull(regs.pull_code)}",
             "",
             f"PAD_PU_CTRL   = {fields['PU0']}",
             f"PAD_PU_CTRL_1 = {fields['PU1']}",
@@ -594,6 +637,7 @@ class App(tk.Tk):
                 "auto_show": bool(self.autoshow_var.get()),
                 "auto_boot_v30": bool(self.autoboot_v30_var.get()),
                 "auto_open_folder": bool(self.autofolder_var.get()),
+                "pull_strength": "30k" if pull_code_from_name(self.pull_var.get()) == PULL_30K else "150k",
             }
         )
         save_config(self.cfg)
@@ -649,7 +693,9 @@ class App(tk.Tk):
 def main() -> int:
     # 允许无界面自检：python boot_force_pin_helper.py --calc 20,21,26
     if len(sys.argv) >= 3 and sys.argv[1] == "--calc":
-        regs = calc_regs(sys.argv[2])
+        pull_name = sys.argv[3] if len(sys.argv) >= 4 else "150k"
+        regs = calc_regs(sys.argv[2], pull_code=pull_code_from_name(pull_name))
+        print(f"PULL={describe_pull(regs.pull_code)}")
         for k, v in regs.as_hex_fields().items():
             print(f"{k}={v}")
         print("---")

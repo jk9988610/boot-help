@@ -1,13 +1,14 @@
 {
   "exe_path": "E:\\OM6239_BootCreator_V05\\binToBin.exe",
-  "last_pins": "23,22,36",
-  "project_id": "0495",
-  "project_name": "V196",
+  "last_pins": "20,32,36",
+  "project_id": "0525",
+  "project_name": "E606",
   "out_en": "00000000",
   "data_out": "FFFFFFFF",
   "reserve": "00000000",
   "auto_show": true,
   "auto_boot_v30": true,
+  "pull_strength": "30k",
   "target_dir": "",
   "auto_open_folder": true
 }
